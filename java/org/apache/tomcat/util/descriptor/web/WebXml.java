@@ -16,10 +16,9 @@
  */
 package org.apache.tomcat.util.descriptor.web;
 
+import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.net.URL;
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.EnumSet;
@@ -29,6 +28,7 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
@@ -45,6 +45,8 @@ import org.apache.juli.logging.Log;
 import org.apache.juli.logging.LogFactory;
 import org.apache.tomcat.util.buf.B2CConverter;
 import org.apache.tomcat.util.buf.UDecoder;
+import org.apache.tomcat.util.buf.UEncoder;
+import org.apache.tomcat.util.buf.UEncoder.SafeCharsSet;
 import org.apache.tomcat.util.descriptor.XmlIdentifiers;
 import org.apache.tomcat.util.digester.DocumentProperties;
 import org.apache.tomcat.util.res.StringManager;
@@ -67,6 +69,8 @@ public class WebXml extends XmlEncodingBase implements DocumentProperties.Charse
         StringManager.getManager(Constants.PACKAGE_NAME);
 
     private final Log log = LogFactory.getLog(WebXml.class); // must not be static
+
+    private final UEncoder urlEncoder = new UEncoder(SafeCharsSet.WITH_SLASH);
 
     /**
      * Global defaults are overridable but Servlets and Servlet mappings need to
@@ -705,6 +709,7 @@ public class WebXml extends XmlEncodingBase implements DocumentProperties.Charse
     private static final String INDENT2 = "  ";
     private static final String INDENT4 = "    ";
     private static final String INDENT6 = "      ";
+    private static final String INDENT8 = "        ";
 
     /**
      * Generate a web.xml in String form that matches the representation stored
@@ -800,7 +805,9 @@ public class WebXml extends XmlEncodingBase implements DocumentProperties.Charse
             appendElement(sb, INDENT4, "param-value", entry.getValue());
             sb.append("  </context-param>\n");
         }
-        sb.append('\n');
+        if (!contextParams.isEmpty()) {
+            sb.append('\n');
+        }
 
         // Filters were introduced in Servlet 2.3
         if (getMajorVersion() > 2 || getMinorVersion() > 2) {
@@ -829,7 +836,9 @@ public class WebXml extends XmlEncodingBase implements DocumentProperties.Charse
                 }
                 sb.append("  </filter>\n");
             }
-            sb.append('\n');
+            if (!filters.isEmpty()) {
+                sb.append('\n');
+            }
 
             for (FilterMap filterMap : filterMaps) {
                 sb.append("  <filter-mapping>\n");
@@ -861,7 +870,9 @@ public class WebXml extends XmlEncodingBase implements DocumentProperties.Charse
                 }
                 sb.append("  </filter-mapping>\n");
             }
-            sb.append('\n');
+            if (!filterMaps.isEmpty()) {
+                sb.append('\n');
+            }
         }
 
         // Listeners were introduced in Servlet 2.3
@@ -871,7 +882,9 @@ public class WebXml extends XmlEncodingBase implements DocumentProperties.Charse
                 appendElement(sb, INDENT4, "listener-class", listener);
                 sb.append("  </listener>\n");
             }
-            sb.append('\n');
+            if (!listeners.isEmpty()) {
+                sb.append('\n');
+            }
         }
 
         for (Map.Entry<String, ServletDef> entry : servlets.entrySet()) {
@@ -932,7 +945,9 @@ public class WebXml extends XmlEncodingBase implements DocumentProperties.Charse
             }
             sb.append("  </servlet>\n");
         }
-        sb.append('\n');
+        if (!servlets.isEmpty()) {
+            sb.append('\n');
+        }
 
         for (Map.Entry<String, String> entry : servletMappings.entrySet()) {
             sb.append("  <servlet-mapping>\n");
@@ -940,27 +955,50 @@ public class WebXml extends XmlEncodingBase implements DocumentProperties.Charse
             appendElement(sb, INDENT4, "url-pattern", encodeUrl(entry.getKey()));
             sb.append("  </servlet-mapping>\n");
         }
-        sb.append('\n');
+        if (!servletMappings.isEmpty()) {
+            sb.append('\n');
+        }
 
-        if (sessionConfig != null) {
+        if (sessionConfig.getSessionTimeout() != null || sessionConfig.getCookieName() != null ||
+                !sessionConfig.getCookieAttributes().isEmpty() || !sessionConfig.getSessionTrackingModes().isEmpty()) {
             sb.append("  <session-config>\n");
             appendElement(sb, INDENT4, "session-timeout",
                     sessionConfig.getSessionTimeout());
             if (majorVersion >= 3) {
-                sb.append("    <cookie-config>\n");
-                appendElement(sb, INDENT6, "name", sessionConfig.getCookieName());
-                appendElement(sb, INDENT6, "domain",
-                        sessionConfig.getCookieDomain());
-                appendElement(sb, INDENT6, "path", sessionConfig.getCookiePath());
-                appendElement(sb, INDENT6, "comment",
-                        sessionConfig.getCookieComment());
-                appendElement(sb, INDENT6, "http-only",
-                        sessionConfig.getCookieHttpOnly());
-                appendElement(sb, INDENT6, "secure",
-                        sessionConfig.getCookieSecure());
-                appendElement(sb, INDENT6, "max-age",
-                        sessionConfig.getCookieMaxAge());
-                sb.append("    </cookie-config>\n");
+                if (sessionConfig.getCookieName() != null || !sessionConfig.getCookieAttributes().isEmpty()) {
+                    sb.append("    <cookie-config>\n");
+                    appendElement(sb, INDENT6, "name", sessionConfig.getCookieName());
+                    appendElement(sb, INDENT6, "domain",
+                            sessionConfig.getCookieDomain());
+                    appendElement(sb, INDENT6, "path", sessionConfig.getCookiePath());
+                    appendElement(sb, INDENT6, "comment",
+                            sessionConfig.getCookieComment());
+                    appendElement(sb, INDENT6, "http-only",
+                            sessionConfig.getCookieHttpOnly());
+                    appendElement(sb, INDENT6, "secure",
+                            sessionConfig.getCookieSecure());
+                    appendElement(sb, INDENT6, "max-age",
+                            sessionConfig.getCookieMaxAge());
+                    for (Map.Entry<String,String> entry : sessionConfig.getCookieAttributes().entrySet()) {
+                        switch (entry.getKey().toLowerCase(Locale.ROOT)) {
+                            case "domain":
+                            case "path":
+                            case "comment":
+                            case "httponly":
+                            case "secure":
+                            case "max-age":
+                                // NO-OP - handled above
+                                break;
+                            default: {
+                                sb.append("      <attribute>\n");
+                                appendElement(sb, INDENT8, "attribute-name", entry.getKey());
+                                appendElement(sb, INDENT8, "attribute-value", entry.getValue());
+                                sb.append("      </attribute>\n");
+                            }
+                        }
+                    }
+                    sb.append("    </cookie-config>\n");
+                }
                 for (SessionTrackingMode stm :
                         sessionConfig.getSessionTrackingModes()) {
                     appendElement(sb, INDENT4, "tracking-mode", stm.name());
@@ -975,7 +1013,9 @@ public class WebXml extends XmlEncodingBase implements DocumentProperties.Charse
             appendElement(sb, INDENT4, "mime-type", entry.getValue());
             sb.append("  </mime-mapping>\n");
         }
-        sb.append('\n');
+        if (!mimeMappings.isEmpty()) {
+            sb.append('\n');
+        }
 
         if (!welcomeFiles.isEmpty()) {
             sb.append("  <welcome-file-list>\n");
@@ -1000,10 +1040,12 @@ public class WebXml extends XmlEncodingBase implements DocumentProperties.Charse
                 appendElement(sb, INDENT4, "error-code",
                         Integer.toString(errorCode));
             }
-            appendElement(sb, INDENT4, "location", errorPage.getLocation());
+            appendElement(sb, INDENT4, "location", errorPage.getLocation(), true);
             sb.append("  </error-page>\n");
         }
-        sb.append('\n');
+        if (!errorPages.isEmpty()) {
+            sb.append('\n');
+        }
 
         // jsp-config was added in Servlet 2.4. Prior to that, tag-libs was used
         // directly and jsp-property-group did not exist
@@ -1074,7 +1116,9 @@ public class WebXml extends XmlEncodingBase implements DocumentProperties.Charse
                 appendElement(sb, INDENT4, "lookup-name", resourceEnvRef.getLookupName());
                 sb.append("  </resource-env-ref>\n");
             }
-            sb.append('\n');
+            if (!resourceEnvRefs.isEmpty()) {
+                sb.append('\n');
+            }
         }
 
         for (ContextResource resourceRef : resourceRefs.values()) {
@@ -1100,7 +1144,9 @@ public class WebXml extends XmlEncodingBase implements DocumentProperties.Charse
             appendElement(sb, INDENT4, "lookup-name", resourceRef.getLookupName());
             sb.append("  </resource-ref>\n");
         }
-        sb.append('\n');
+        if (!resourceRefs.isEmpty()) {
+            sb.append('\n');
+        }
 
         for (SecurityConstraint constraint : securityConstraints) {
             sb.append("  <security-constraint>\n");
@@ -1126,12 +1172,21 @@ public class WebXml extends XmlEncodingBase implements DocumentProperties.Charse
                 }
                 sb.append("    </web-resource-collection>\n");
             }
-            if (constraint.findAuthRoles().length > 0) {
+            if (constraint.findAuthRoles().length > 0 || constraint.getAllRoles() ||
+                    constraint.getAuthenticatedUsers()) {
                 sb.append("    <auth-constraint>\n");
                 for (String role : constraint.findAuthRoles()) {
                     appendElement(sb, INDENT6, "role-name", role);
                 }
+                if (constraint.getAllRoles()) {
+                    appendElement(sb, INDENT6, "role-name", SecurityConstraint.ROLE_ALL_ROLES);
+                }
+                if (constraint.getAuthenticatedUsers()) {
+                    appendElement(sb, INDENT6, "role-name", SecurityConstraint.ROLE_ALL_AUTHENTICATED_USERS);
+                }
                 sb.append("    </auth-constraint>\n");
+            } else if (constraint.getAuthConstraint()) {
+                sb.append("    <auth-constraint/>\n");
             }
             if (constraint.getUserConstraint() != null) {
                 sb.append("    <user-data-constraint>\n");
@@ -1141,7 +1196,9 @@ public class WebXml extends XmlEncodingBase implements DocumentProperties.Charse
             }
             sb.append("  </security-constraint>\n");
         }
-        sb.append('\n');
+        if (!securityConstraints.isEmpty()) {
+            sb.append('\n');
+        }
 
         if (loginConfig != null) {
             sb.append("  <login-config>\n");
@@ -1153,9 +1210,9 @@ public class WebXml extends XmlEncodingBase implements DocumentProperties.Charse
                         loginConfig.getLoginPage() != null) {
                 sb.append("    <form-login-config>\n");
                 appendElement(sb, INDENT6, "form-login-page",
-                        loginConfig.getLoginPage());
+                        loginConfig.getLoginPage(), true);
                 appendElement(sb, INDENT6, "form-error-page",
-                        loginConfig.getErrorPage());
+                        loginConfig.getErrorPage(), true);
                 sb.append("    </form-login-config>\n");
             }
             sb.append("  </login-config>\n\n");
@@ -1186,7 +1243,9 @@ public class WebXml extends XmlEncodingBase implements DocumentProperties.Charse
             appendElement(sb, INDENT4, "lookup-name", envEntry.getLookupName());
             sb.append("  </env-entry>\n");
         }
-        sb.append('\n');
+        if (!envEntries.isEmpty()) {
+            sb.append('\n');
+        }
 
         for (ContextEjb ejbRef : ejbRefs.values()) {
             sb.append("  <ejb-ref>\n");
@@ -1208,7 +1267,9 @@ public class WebXml extends XmlEncodingBase implements DocumentProperties.Charse
             appendElement(sb, INDENT4, "lookup-name", ejbRef.getLookupName());
             sb.append("  </ejb-ref>\n");
         }
-        sb.append('\n');
+        if (!ejbRefs.isEmpty()) {
+            sb.append('\n');
+        }
 
         // ejb-local-ref was introduced in Servlet 2.3
         if (getMajorVersion() > 2 || getMinorVersion() > 2) {
@@ -1233,7 +1294,9 @@ public class WebXml extends XmlEncodingBase implements DocumentProperties.Charse
                 appendElement(sb, INDENT4, "lookup-name", ejbLocalRef.getLookupName());
                 sb.append("  </ejb-local-ref>\n");
             }
-            sb.append('\n');
+            if (!ejbLocalRefs.isEmpty()) {
+                sb.append('\n');
+            }
         }
 
         // service-ref was introduced in Servlet 2.4
@@ -1292,7 +1355,9 @@ public class WebXml extends XmlEncodingBase implements DocumentProperties.Charse
                 appendElement(sb, INDENT4, "lookup-name", serviceRef.getLookupName());
                 sb.append("  </service-ref>\n");
             }
-            sb.append('\n');
+            if (!serviceRefs.isEmpty()) {
+                sb.append('\n');
+            }
         }
 
         if (!postConstructMethods.isEmpty()) {
@@ -1347,7 +1412,9 @@ public class WebXml extends XmlEncodingBase implements DocumentProperties.Charse
                 appendElement(sb, INDENT4, "lookup-name", mdr.getLookupName());
                 sb.append("  </message-destination-ref>\n");
             }
-            sb.append('\n');
+            if (!messageDestinationRefs.isEmpty()) {
+                sb.append('\n');
+            }
 
             for (MessageDestination md : messageDestinations.values()) {
                 sb.append("  <message-destination>\n");
@@ -1359,7 +1426,9 @@ public class WebXml extends XmlEncodingBase implements DocumentProperties.Charse
                 appendElement(sb, INDENT4, "lookup-name", md.getLookupName());
                 sb.append("  </message-destination>\n");
             }
-            sb.append('\n');
+            if (!messageDestinations.isEmpty()) {
+                sb.append('\n');
+            }
         }
 
         // locale-encoding-mapping-list was introduced in Servlet 2.4
@@ -1397,13 +1466,23 @@ public class WebXml extends XmlEncodingBase implements DocumentProperties.Charse
     }
 
 
-    private String encodeUrl(String input) {
-        return URLEncoder.encode(input, StandardCharsets.UTF_8);
+    private synchronized String encodeUrl(String input) {
+        try {
+            return urlEncoder.encodeURL(input, 0, input.length()).toString();
+        } catch (IOException e) {
+            throw new IllegalArgumentException(input, e);
+        }
     }
 
 
-    private static void appendElement(StringBuilder sb, String indent,
+    private void appendElement(StringBuilder sb, String indent,
             String elementName, String value) {
+        appendElement(sb, indent, elementName, value, false);
+    }
+
+    private void appendElement(StringBuilder sb, String indent,
+            String elementName, String value, boolean encodeValue) {
+
         if (value == null) {
             return;
         }
@@ -1417,14 +1496,18 @@ public class WebXml extends XmlEncodingBase implements DocumentProperties.Charse
             sb.append('<');
             sb.append(elementName);
             sb.append('>');
-            sb.append(Escape.xml(value));
+            if (encodeValue) {
+                sb.append(Escape.xml(encodeUrl(value)));
+            } else {
+                sb.append(Escape.xml(value));
+            }
             sb.append("</");
             sb.append(elementName);
             sb.append(">\n");
         }
     }
 
-    private static void appendElement(StringBuilder sb, String indent,
+    private void appendElement(StringBuilder sb, String indent,
             String elementName, Object value) {
         if (value == null) {
             return;
