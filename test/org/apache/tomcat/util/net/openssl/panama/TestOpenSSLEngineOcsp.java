@@ -25,7 +25,9 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.net.InetSocketAddress;
+import java.net.ServerSocket;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.util.concurrent.ExecutorService;
@@ -59,6 +61,7 @@ public class TestOpenSSLEngineOcsp {
 
     // Constants from OpenSSL's x509_vfy.h and ocsp.h
     private static final int X509_V_OK = 0;
+    private static final int X509_V_ERR_UNABLE_TO_GET_CRL = 3;
     private static final int X509_V_ERR_APPLICATION_VERIFICATION = 50;
     private static final int X509_V_ERR_OCSP_RESP_INVALID = 96;
     private static final int X509_V_ERR_OCSP_SIGNATURE_FAILURE = 97;
@@ -224,6 +227,11 @@ public class TestOpenSSLEngineOcsp {
             }
             respond(exchange, 500, new byte[0]);
         });
+        // Responder failures
+        ocspResponder.createContext("/error", exchange -> respond(exchange, 500, new byte[0]));
+        ocspResponder.createContext("/invalid", exchange -> respond(exchange, 200,
+                "This is not an OCSP response".getBytes(StandardCharsets.ISO_8859_1)));
+        ocspResponder.createContext("/large", exchange -> respond(exchange, 200, new byte[200 * 1024]));
         // Valid responses
         ocspResponder.createContext("/good", exchange -> respondOcsp(exchange,
                 new ResponseSpec(V_OCSP_CERTSTATUS_GOOD, caCert, caKey)));
@@ -340,9 +348,50 @@ public class TestOpenSSLEngineOcsp {
                 processOCSPRequest(responderUrl("/slow"), caCert, ocspLeafCert));
         long durationMillis = (System.nanoTime() - start) / 1000000;
         // No response was received
-        Assert.assertEquals(X509_V_ERR_APPLICATION_VERIFICATION, getError());
+        Assert.assertEquals(X509_V_ERR_UNABLE_TO_GET_CRL, getError());
         Assert.assertTrue("The OCSP request took [" + durationMillis + "] ms and did not time out",
                 durationMillis < SLOW_RESPONDER_DELAY - 2000);
+        // OCSP soft-fail is not supported
+        Assert.assertEquals("Client certificate accepted although the OCSP check failed", 0, verify());
+    }
+
+
+    @Test
+    public void testResponderHttpError() throws Throwable {
+        doTestOcspFailure(responderUrl("/error"), X509_V_ERR_UNABLE_TO_GET_CRL);
+    }
+
+
+    @Test
+    public void testResponderResponseTooLarge() throws Throwable {
+        doTestOcspFailure(responderUrl("/large"), X509_V_ERR_UNABLE_TO_GET_CRL);
+    }
+
+
+    @Test
+    public void testResponderUnavailable() throws Throwable {
+        int port;
+        try (ServerSocket s = new ServerSocket()) {
+            s.bind(new InetSocketAddress(HOST, 0));
+            port = s.getLocalPort();
+        }
+        // Nothing is listening on the port anymore
+        doTestOcspFailure(new URL("http://" + HOST + ":" + port + "/"), X509_V_ERR_UNABLE_TO_GET_CRL);
+    }
+
+
+    @Test
+    public void testResponderInvalidResponse() throws Throwable {
+        doTestOcspFailure(responderUrl("/invalid"), X509_V_ERR_APPLICATION_VERIFICATION);
+    }
+
+
+    @Test
+    public void testNoOcspCheckSoftFail() throws Throwable {
+        // Control: the verification is not rejected when OCSP is disabled
+        createVerificationContext(true, DEFAULT_OCSP_TIMEOUT, null);
+        call("X509_STORE_CTX_set_error", x509ctx, Integer.valueOf(X509_V_ERR_UNABLE_TO_GET_CRL));
+        Assert.assertEquals(1, verify());
     }
 
 
@@ -439,6 +488,23 @@ public class TestOpenSSLEngineOcsp {
          * rejected. The certificate must be rejected.
          */
         Assert.assertEquals("Client certificate accepted although the OCSP response was not valid", 0, verify());
+    }
+
+
+    private void doTestOcspFailure(URL url, int expectedError) throws Throwable {
+        createVerificationContext(false, DEFAULT_OCSP_TIMEOUT, null);
+
+        Assert.assertEquals(V_OCSP_CERTSTATUS_UNKNOWN, processOCSPRequest(url, caCert, ocspLeafCert));
+        Assert.assertEquals(expectedError, getError());
+
+        /*
+         * The verification context has no current certificate so the OCSP
+         * processing in the callback returns V_OCSP_CERTSTATUS_UNKNOWN and
+         * leaves the error set by processOCSPRequest() above unchanged. This is
+         * the state the callback sees after a failed OCSP request. The
+         * certificate must be rejected.
+         */
+        Assert.assertEquals("Client certificate accepted although the OCSP check failed", 0, verify());
     }
 
 
