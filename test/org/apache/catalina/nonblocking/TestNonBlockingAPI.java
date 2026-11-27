@@ -517,7 +517,7 @@ public class TestNonBlockingAPI extends TomcatBaseTest {
     @Test
     public void testNonBlockingReadChunkedSplitMaximum() throws Exception {
         String requestBody = new String(
-                "14" + SimpleHttpClient.CRLF +
+                "14;a=b;c" + SimpleHttpClient.CRLF +
                 "012345678901FINISHED" + SimpleHttpClient.CRLF +
                 "0" + SimpleHttpClient.CRLF +
                 TRAILER_HEADER_NAME + ": " + TRAILER_HEADER_VALUE + SimpleHttpClient.CRLF +
