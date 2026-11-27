@@ -35,6 +35,11 @@ public class MappingData {
     public int contextSlashCount = 0;
     public Context[] contexts = null;
     public Wrapper wrapper = null;
+    /**
+     * The wrapper for the current request dispatcher target. Only set when required so may be null even during the
+     * processing of a dispatched request.
+     */
+    public Wrapper requestDispatcherWrapper = null;
     public boolean jspWildCard = false;
 
     public final MessageBytes requestPath = MessageBytes.newInstance();
@@ -52,6 +57,7 @@ public class MappingData {
         contextSlashCount = 0;
         contexts = null;
         wrapper = null;
+        requestDispatcherWrapper = null;
         jspWildCard = false;
         requestPath.recycle();
         wrapperPath.recycle();

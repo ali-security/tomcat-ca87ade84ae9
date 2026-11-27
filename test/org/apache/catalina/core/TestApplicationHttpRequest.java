@@ -18,10 +18,14 @@ package org.apache.catalina.core;
 
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 
+import jakarta.servlet.RequestDispatcher;
+import jakarta.servlet.ServletContext;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
@@ -31,11 +35,15 @@ import org.junit.Assert;
 import org.junit.Test;
 
 import org.apache.catalina.Context;
+import org.apache.catalina.Wrapper;
+import org.apache.catalina.authenticator.BasicAuthenticator;
 import org.apache.catalina.connector.Request;
+import org.apache.catalina.startup.TesterMapRealm;
 import org.apache.catalina.startup.Tomcat;
 import org.apache.catalina.startup.TomcatBaseTest;
 import org.apache.tomcat.util.ExceptionUtils;
 import org.apache.tomcat.util.buf.ByteChunk;
+import org.apache.tomcat.util.descriptor.web.LoginConfig;
 
 public class TestApplicationHttpRequest extends TomcatBaseTest {
 
@@ -220,7 +228,7 @@ public class TestApplicationHttpRequest extends TomcatBaseTest {
             request.setAttribute("key", "value");
             return request;
         }
-        return new ApplicationHttpRequest(getNestedRequest(depth - 1), null, false);
+        return new ApplicationHttpRequest(getNestedRequest(depth - 1), null, false, null);
     }
 
 
@@ -258,6 +266,207 @@ public class TestApplicationHttpRequest extends TomcatBaseTest {
 
         Assert.assertEquals(200, rc);
         Assert.assertEquals("OK", response.toString());
+    }
+
+
+    /*
+     * isUserInRole() must use the security-role-ref mappings of the RequestDispatcher target rather than those of the
+     * Servlet that performed the dispatch.
+     */
+    @Test
+    public void testIsUserInRoleForward() throws Exception {
+        doTestIsUserInRoleDispatch(DispatchMode.FORWARD, false, "target:targetAlias;");
+    }
+
+
+    @Test
+    public void testIsUserInRoleInclude() throws Exception {
+        doTestIsUserInRoleDispatch(DispatchMode.INCLUDE, false,
+                "source:sourceAlias;target:targetAlias;source:sourceAlias;");
+    }
+
+
+    @Test
+    public void testIsUserInRoleAsyncDispatch() throws Exception {
+        doTestIsUserInRoleDispatch(DispatchMode.ASYNC, false, "target:targetAlias;");
+    }
+
+
+    @Test
+    public void testIsUserInRoleForwardThenInclude() throws Exception {
+        doTestIsUserInRoleDispatch(DispatchMode.FORWARD, true,
+                "middle:middleAlias;target:targetAlias;middle:middleAlias;");
+    }
+
+
+    @Test
+    public void testIsUserInRoleCrossContextInclude() throws Exception {
+        Tomcat tomcat = getTomcatInstance();
+
+        // No file system docBase required
+        Context ctx2 = tomcat.addContext("/second", null);
+        Wrapper target = Tomcat.addServlet(ctx2, "target", new RoleRefServlet("target", DispatchMode.NONE, null, null));
+        target.addSecurityReference("targetAlias", "granted");
+        ctx2.addServletMappingDecoded("/target", "target");
+
+        // No file system docBase required
+        Context ctx1 = tomcat.addContext("/first", null);
+        ctx1.setCrossContext(true);
+        Wrapper source = Tomcat.addServlet(ctx1, "source",
+                new RoleRefServlet("source", DispatchMode.INCLUDE, "/target", "/second"));
+        source.addSecurityReference("sourceAlias", "granted");
+        ctx1.addServletMappingDecoded("/source", "source");
+
+        // Realm shared by both contexts
+        tomcat.getEngine().setRealm(createRoleRefRealm());
+        configureBasicAuth(ctx1);
+
+        tomcat.start();
+
+        doRoleRefRequest("/first/source", "source:sourceAlias;target:targetAlias;source:sourceAlias;");
+    }
+
+
+    private void doTestIsUserInRoleDispatch(DispatchMode mode, boolean nested, String expected) throws Exception {
+        Tomcat tomcat = getTomcatInstance();
+
+        // No file system docBase required
+        Context ctx = getProgrammaticRootContext();
+
+        // The source Servlet maps an alias to a role the user has
+        Wrapper source = Tomcat.addServlet(ctx, "source",
+                new RoleRefServlet("source", mode, nested ? "/middle" : "/target", null));
+        source.addSecurityReference("sourceAlias", "granted");
+        source.setAsyncSupported(true);
+        ctx.addServletMappingDecoded("/source", "source");
+
+        if (nested) {
+            Wrapper middle = Tomcat.addServlet(ctx, "middle",
+                    new RoleRefServlet("middle", DispatchMode.INCLUDE, "/target", null));
+            middle.addSecurityReference("middleAlias", "granted");
+            middle.setAsyncSupported(true);
+            ctx.addServletMappingDecoded("/middle", "middle");
+        }
+
+        // The target Servlet maps a different alias to the same role
+        Wrapper target = Tomcat.addServlet(ctx, "target", new RoleRefServlet("target", DispatchMode.NONE, null, null));
+        target.addSecurityReference("targetAlias", "granted");
+        target.setAsyncSupported(true);
+        ctx.addServletMappingDecoded("/target", "target");
+
+        ctx.setRealm(createRoleRefRealm());
+        configureBasicAuth(ctx);
+
+        tomcat.start();
+
+        doRoleRefRequest("/source", expected);
+    }
+
+
+    private static TesterMapRealm createRoleRefRealm() {
+        TesterMapRealm realm = new TesterMapRealm();
+        realm.addUser("testUser", "testPwd");
+        // The user only has the real role. The aliases are not roles the user has.
+        realm.addUserRole("testUser", "granted");
+        return realm;
+    }
+
+
+    private static void configureBasicAuth(Context ctx) {
+        ctx.setLoginConfig(new LoginConfig("BASIC", null, null, null));
+        ctx.getPipeline().addValve(new BasicAuthenticator());
+        // No security constraints so authenticate when credentials are provided
+        ctx.setPreemptiveAuthentication(true);
+    }
+
+
+    private void doRoleRefRequest(String path, String expected) throws Exception {
+        ByteChunk bc = new ByteChunk();
+        Map<String,List<String>> reqHeaders = new HashMap<>();
+        List<String> authHeaders = new ArrayList<>();
+        // testUser, testPwd
+        authHeaders.add("Basic dGVzdFVzZXI6dGVzdFB3ZA==");
+        reqHeaders.put("Authorization", authHeaders);
+
+        int rc = getUrl("http://localhost:" + getPort() + path, bc, reqHeaders, null);
+
+        Assert.assertEquals(200, rc);
+        Assert.assertEquals(expected, bc.toString());
+    }
+
+
+    private enum DispatchMode {
+        NONE,
+        FORWARD,
+        INCLUDE,
+        ASYNC
+    }
+
+
+    private static class RoleRefServlet extends HttpServlet {
+
+        private static final long serialVersionUID = 1L;
+
+        private static final String[] ALIASES = { "sourceAlias", "middleAlias", "targetAlias" };
+
+        private final String name;
+        private final DispatchMode mode;
+        private final String dispatchPath;
+        private final String dispatchContextPath;
+
+        RoleRefServlet(String name, DispatchMode mode, String dispatchPath, String dispatchContextPath) {
+            this.name = name;
+            this.mode = mode;
+            this.dispatchPath = dispatchPath;
+            this.dispatchContextPath = dispatchContextPath;
+        }
+
+        @Override
+        protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
+            resp.setContentType("text/plain");
+            resp.setCharacterEncoding("UTF-8");
+
+            ServletContext servletContext = getServletContext();
+            if (dispatchContextPath != null) {
+                servletContext = servletContext.getContext(dispatchContextPath);
+            }
+
+            switch (mode) {
+                case NONE:
+                    writeRoles(req, resp);
+                    break;
+                case FORWARD:
+                    servletContext.getRequestDispatcher(dispatchPath).forward(req, resp);
+                    break;
+                case INCLUDE: {
+                    RequestDispatcher rd = servletContext.getRequestDispatcher(dispatchPath);
+                    writeRoles(req, resp);
+                    rd.include(req, resp);
+                    writeRoles(req, resp);
+                    break;
+                }
+                case ASYNC:
+                    req.startAsync().dispatch(servletContext, dispatchPath);
+                    break;
+            }
+        }
+
+        private void writeRoles(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+            PrintWriter pw = resp.getWriter();
+            pw.print(name);
+            pw.print(':');
+            boolean first = true;
+            for (String alias : ALIASES) {
+                if (req.isUserInRole(alias)) {
+                    if (!first) {
+                        pw.print(',');
+                    }
+                    pw.print(alias);
+                    first = false;
+                }
+            }
+            pw.print(';');
+        }
     }
 
 
