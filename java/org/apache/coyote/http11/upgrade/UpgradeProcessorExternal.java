@@ -44,7 +44,7 @@ public class UpgradeProcessorExternal extends UpgradeProcessorBase {
         super(upgradeToken);
         this.upgradeInfo = new UpgradeInfo();
         if (upgradeGroupInfo != null) {
-            upgradeGroupInfo.addUpgradeInfo(upgradeInfo);
+            upgradeInfo.setGroupInfo(upgradeGroupInfo);
         }
         this.upgradeServletInputStream = new UpgradeServletInputStream(this, wrapper, upgradeInfo);
         this.upgradeServletOutputStream = new UpgradeServletOutputStream(this, wrapper, upgradeInfo);
@@ -60,6 +60,17 @@ public class UpgradeProcessorExternal extends UpgradeProcessorBase {
     @Override
     protected Log getLog() {
         return log;
+    }
+
+
+    @Override
+    public void recycle() {
+        // Ensure the connection statistics are always de-registered when the
+        // processor is released by the container. The close() method below
+        // de-registers the statistics as well but it is only triggered if the
+        // application closes the WebConnection, which an upgrade handler is
+        // not required to do.
+        upgradeInfo.setGroupInfo(null);
     }
 
 

@@ -25,12 +25,17 @@ import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.io.Reader;
 import java.io.Writer;
+import java.lang.reflect.Field;
 import java.net.Socket;
 import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
 
 import javax.net.SocketFactory;
 
+import jakarta.annotation.PreDestroy;
 import jakarta.servlet.ReadListener;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.ServletInputStream;
@@ -49,6 +54,7 @@ import static org.apache.catalina.startup.SimpleHttpClient.CRLF;
 import org.apache.catalina.Context;
 import org.apache.catalina.startup.Tomcat;
 import org.apache.catalina.startup.TomcatBaseTest;
+import org.apache.coyote.http11.AbstractHttp11Protocol;
 
 public class TestUpgrade extends TomcatBaseTest {
 
@@ -101,6 +107,80 @@ public class TestUpgrade extends TomcatBaseTest {
     @Test
     public void testFirstCallToOnWritePossible() throws Exception {
         doTestFixedResponse(FixedResponseNonBlocking.class);
+    }
+
+    @Test
+    public void testUpgradeInfoUnregisteredWhenConnectionClosed() throws Exception {
+        // The upgrade handler never closes the WebConnection so all clean-up
+        // has to be performed by the container when the connection is closed.
+        UpgradeConnection uc = doUpgrade(NoClose.class);
+
+        AbstractHttp11Protocol<?> protocol =
+                (AbstractHttp11Protocol<?>) getTomcatInstance().getConnector().getProtocolHandler();
+        UpgradeGroupInfo groupInfo = protocol.getUpgradeGroupInfo("test");
+
+        Set<UpgradeInfo> upgradeInfos = getUpgradeInfos(groupInfo);
+        waitForCondition(() -> upgradeInfos.size() == 1, 5000);
+        Assert.assertEquals(1, upgradeInfos.size());
+
+        // Closing the connector closes the connection. This is the only event
+        // that can trigger the clean-up of the upgrade registration.
+        getTomcatInstance().stop();
+
+        waitForCondition(upgradeInfos::isEmpty, 10000);
+
+        // The registration must not outlive the connection.
+        Assert.assertEquals("The UpgradeInfo remained registered after the connection was closed.", 0,
+                upgradeInfos.size());
+
+        uc.shutdownInput();
+        uc.shutdownOutput();
+    }
+
+
+    @Test
+    public void testUpgradeHandlerDestroyedWhenConnectionClosed() throws Exception {
+        TrackDestroy.initialised.set(false);
+        TrackDestroy.destroyed.set(false);
+        TrackDestroy.preDestroyed.set(false);
+
+        // The upgrade handler never closes the WebConnection so the container
+        // has to destroy the handler when it closes the connection.
+        UpgradeConnection uc = doUpgrade(TrackDestroy.class);
+
+        waitForCondition(TrackDestroy.initialised::get, 5000);
+        Assert.assertTrue(TrackDestroy.initialised.get());
+
+        // Closing the connector closes the socket directly (via
+        // SocketWrapperBase.close()) rather than by processing a close event
+        // through the upgrade processor.
+        getTomcatInstance().stop();
+
+        waitForCondition(() -> TrackDestroy.destroyed.get() && TrackDestroy.preDestroyed.get(), 10000);
+
+        Assert.assertTrue("HttpUpgradeHandler.destroy() was not called after the connection was closed",
+                TrackDestroy.destroyed.get());
+        Assert.assertTrue("The HttpUpgradeHandler instance was not destroyed after the connection was closed",
+                TrackDestroy.preDestroyed.get());
+
+        uc.shutdownInput();
+        uc.shutdownOutput();
+    }
+
+
+    @SuppressWarnings("unchecked")
+    private static Set<UpgradeInfo> getUpgradeInfos(UpgradeGroupInfo groupInfo) throws Exception {
+        Field upgradeInfosField = UpgradeGroupInfo.class.getDeclaredField("upgradeInfos");
+        upgradeInfosField.setAccessible(true);
+        return (Set<UpgradeInfo>) upgradeInfosField.get(groupInfo);
+    }
+
+
+    private static void waitForCondition(BooleanSupplier condition, long timeoutMs) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (!condition.getAsBoolean() && System.currentTimeMillis() < deadline) {
+            Thread.sleep(50);
+        }
     }
 
     private void doTestCheckClosed(
@@ -288,6 +368,57 @@ public class TestUpgrade extends TomcatBaseTest {
         @Override
         public void destroy() {
             // NO-OP
+        }
+    }
+
+
+    public static class NoClose implements HttpUpgradeHandler {
+        @Override
+        public void init(WebConnection connection) {
+            // Open the streams to make the upgraded connection fully active but
+            // never close the WebConnection.
+            try {
+                connection.getInputStream();
+                connection.getOutputStream();
+            } catch (IOException ioe) {
+                throw new IllegalStateException(ioe);
+            }
+        }
+
+        @Override
+        public void destroy() {
+            // NO-OP
+        }
+    }
+
+
+    public static class TrackDestroy implements HttpUpgradeHandler {
+
+        static final AtomicBoolean initialised = new AtomicBoolean();
+        static final AtomicBoolean destroyed = new AtomicBoolean();
+        static final AtomicBoolean preDestroyed = new AtomicBoolean();
+
+        @Override
+        public void init(WebConnection connection) {
+            // Open the streams to make the upgraded connection fully active but
+            // never close the WebConnection.
+            try {
+                connection.getInputStream();
+                connection.getOutputStream();
+            } catch (IOException ioe) {
+                throw new IllegalStateException(ioe);
+            }
+            initialised.set(true);
+        }
+
+        @Override
+        public void destroy() {
+            destroyed.set(true);
+        }
+
+        @PreDestroy
+        public void preDestroy() {
+            preDestroyed.set(true);
         }
     }
 
