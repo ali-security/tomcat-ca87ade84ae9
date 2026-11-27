@@ -1154,10 +1154,14 @@ public abstract class AbstractAccessLogValve extends ValveBase implements Access
                 } else {
                     buf.append(request.getMethod());
                     buf.append(' ');
-                    buf.append(request.getRequestURI());
-                    if (request.getQueryString() != null) {
+                    escapeAndAppend(request.getRequestURI(), buf);
+                    String query = request.getQueryString();
+                    if (query != null) {
                         buf.append('?');
-                        buf.append(request.getQueryString());
+                        // Don't want to write "-" if the query string is empty
+                        if (!query.isEmpty()) {
+                            escapeAndAppend(query, buf);
+                        }
                     }
                     buf.append(' ');
                     buf.append(request.getProtocol());
@@ -1402,7 +1406,12 @@ public abstract class AbstractAccessLogValve extends ValveBase implements Access
             }
             if (query != null) {
                 buf.append('?');
-                buf.append(query);
+                // Don't want to write "-" if the query string is empty
+                if (!query.isEmpty()) {
+                    escapeAndAppend(query, buf);
+                }
+            } else {
+                buf.append('-');
             }
         }
     }
@@ -1433,7 +1442,7 @@ public abstract class AbstractAccessLogValve extends ValveBase implements Access
         @Override
         public void addElement(CharArrayWriter buf, Date date, Request request, Response response, long time) {
             if (request != null) {
-                buf.append(request.getRequestURI());
+                escapeAndAppend(request.getRequestURI(), buf);
             } else {
                 buf.append('-');
             }
