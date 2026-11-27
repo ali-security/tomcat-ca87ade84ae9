@@ -532,6 +532,8 @@ public class ExpiresFilter extends FilterBase {
          */
         private String cacheControlHeader;
 
+        private boolean wrappedCacheControlHeaderRead;
+
         /**
          * Value of the {@code Last-Modified} HTTP response header if it has been set.
          */
@@ -542,6 +544,7 @@ public class ExpiresFilter extends FilterBase {
         private PrintWriter printWriter;
 
         private final HttpServletRequest request;
+        private final HttpServletResponse response;
 
         private ServletOutputStream servletOutputStream;
 
@@ -554,6 +557,7 @@ public class ExpiresFilter extends FilterBase {
         public XHttpServletResponse(HttpServletRequest request, HttpServletResponse response) {
             super(response);
             this.request = request;
+            this.response = response;
         }
 
         @Override
@@ -567,8 +571,12 @@ public class ExpiresFilter extends FilterBase {
 
         @Override
         public void addHeader(String name, String value) {
+            boolean isCacheControlHeader = HEADER_CACHE_CONTROL.equalsIgnoreCase(name);
+            if (isCacheControlHeader) {
+                synchroniseCacheControlHeader();
+            }
             super.addHeader(name, value);
-            if (HEADER_CACHE_CONTROL.equalsIgnoreCase(name)) {
+            if (isCacheControlHeader) {
                 if (cacheControlHeader == null) {
                     cacheControlHeader = value;
                 } else {
@@ -578,6 +586,7 @@ public class ExpiresFilter extends FilterBase {
         }
 
         public String getCacheControlHeader() {
+            synchroniseCacheControlHeader();
             return cacheControlHeader;
         }
 
@@ -615,6 +624,7 @@ public class ExpiresFilter extends FilterBase {
             this.lastModifiedHeader = 0;
             this.lastModifiedHeaderSet = false;
             this.cacheControlHeader = null;
+            this.wrappedCacheControlHeaderRead = false;
         }
 
         @Override
@@ -631,6 +641,21 @@ public class ExpiresFilter extends FilterBase {
             super.setHeader(name, value);
             if (HEADER_CACHE_CONTROL.equalsIgnoreCase(name)) {
                 this.cacheControlHeader = value;
+                this.wrappedCacheControlHeaderRead = true;
+            }
+        }
+
+        /*
+         * Copy any existing cache control headers from the wrapped response to the local copy. Only do this once to
+         * avoid duplicates. Subsequent calls to this method will be NO-OPs unless reset() is called.
+         */
+        private void synchroniseCacheControlHeader() {
+            if (!wrappedCacheControlHeaderRead) {
+                wrappedCacheControlHeaderRead = true;
+                String originalCacheControlHeader = StringUtils.join(response.getHeaders(HEADER_CACHE_CONTROL));
+                if (!originalCacheControlHeader.isEmpty()) {
+                    cacheControlHeader = originalCacheControlHeader;
+                }
             }
         }
 
@@ -1479,7 +1504,7 @@ public class ExpiresFilter extends FilterBase {
 
             String cacheControlHeader = response.getCacheControlHeader();
             String newCacheControlHeader =
-                    (cacheControlHeader == null) ? maxAgeDirective : cacheControlHeader + ", " + maxAgeDirective;
+                    (cacheControlHeader == null) ? maxAgeDirective : cacheControlHeader + "," + maxAgeDirective;
             response.setHeader(HEADER_CACHE_CONTROL, newCacheControlHeader);
             response.setDateHeader(HEADER_EXPIRES, expirationDate.getTime());
         }
