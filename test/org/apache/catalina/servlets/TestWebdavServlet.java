@@ -290,6 +290,7 @@ public class TestWebdavServlet extends TomcatBaseTest {
 
         // Create a temp webapp that can be safely written to
         File tempWebapp = new File(getTemporaryDirectory(), "webdav-properties");
+        tempWebapp.deleteOnExit();
         Assert.assertTrue(tempWebapp.mkdirs());
         Context ctxt = tomcat.addContext("", tempWebapp.getAbsolutePath());
         Wrapper webdavServlet = Tomcat.addServlet(ctxt, "webdav", new WebdavServlet());
@@ -396,6 +397,7 @@ public class TestWebdavServlet extends TomcatBaseTest {
 
         // Create a temp webapp that can be safely written to
         File tempWebapp = new File(getTemporaryDirectory(), "webdav-webapp");
+        tempWebapp.deleteOnExit();
         Assert.assertTrue(tempWebapp.mkdirs());
         Context ctxt = tomcat.addContext("", tempWebapp.getAbsolutePath());
         Wrapper webdavServlet = Tomcat.addServlet(ctxt, "webdav", new WebdavServlet());
@@ -740,6 +742,7 @@ public class TestWebdavServlet extends TomcatBaseTest {
 
         // Create a temp webapp that can be safely written to
         File tempWebapp = new File(getTemporaryDirectory(), "webdav-subpath");
+        tempWebapp.deleteOnExit();
         File subPath = new File(tempWebapp, "aaa");
         Assert.assertTrue(subPath.mkdirs());
 
@@ -815,6 +818,7 @@ public class TestWebdavServlet extends TomcatBaseTest {
 
         // Create a temp webapp that can be safely written to
         File tempWebapp = new File(getTemporaryDirectory(), "webdav-lock");
+        tempWebapp.deleteOnExit();
         Assert.assertTrue(tempWebapp.mkdirs());
         Context ctxt = tomcat.addContext("", tempWebapp.getAbsolutePath());
         Wrapper webdavServlet = Tomcat.addServlet(ctxt, "webdav", new WebdavServlet());
@@ -1088,6 +1092,7 @@ public class TestWebdavServlet extends TomcatBaseTest {
 
         // Create a temp webapp that can be safely written to
         File tempWebapp = new File(getTemporaryDirectory(), "webdav-if");
+        tempWebapp.deleteOnExit();
         File folder = new File(tempWebapp, "/myfolder/myfolder2/myfolder4/myfolder5");
         Assert.assertTrue(folder.mkdirs());
         File file = new File(folder, "myfile.txt");
@@ -1194,6 +1199,7 @@ public class TestWebdavServlet extends TomcatBaseTest {
 
         // Create a temp webapp that can be safely written to
         File tempWebapp = new File(getTemporaryDirectory(), "webdav-store");
+        tempWebapp.deleteOnExit();
         Assert.assertTrue(tempWebapp.mkdirs());
         Context ctxt = tomcat.addContext("", tempWebapp.getAbsolutePath());
         Wrapper webdavServlet = Tomcat.addServlet(ctxt, "webdav", new WebdavServlet());
@@ -1221,6 +1227,78 @@ public class TestWebdavServlet extends TomcatBaseTest {
         validateXml(client.getResponseBody());
 
     }
+
+
+    /*
+     * Only tests LOCK bodies exceeding limit. Other tests cover valid LOCK bodies.
+     */
+    @Test
+    public void testLockBodyLimit() throws Exception {
+        doTestLimit("LOCK", LOCK_BODY);
+    }
+
+
+    /*
+     * Only tests PROPFIND bodies exceeding limit. Other tests cover valid PROPFIND bodies.
+     */
+    @Test
+    public void testPropFindBodyLimit() throws Exception {
+        doTestLimit("PROPFIND", PROPFIND_PROP);
+    }
+
+
+    private void doTestLimit(String method, String requestBody) throws Exception {
+
+        Tomcat tomcat = getTomcatInstance();
+
+        File appDir = new File("test/webapp");
+        Context ctxt = tomcat.addContext("", appDir.getAbsolutePath());
+
+        Wrapper webdavServlet = Tomcat.addServlet(ctxt, "webdav", new WebdavServlet());
+        webdavServlet.addInitParameter("listings", "true");
+        webdavServlet.addInitParameter("secret", "foo");
+        webdavServlet.addInitParameter("readonly", "false");
+        webdavServlet.addInitParameter("useStrongETags", "true");
+        webdavServlet.addInitParameter("maxRequestBodySize", "10");
+
+        ctxt.addServletMappingDecoded("/*", "webdav");
+        tomcat.start();
+
+        // With content length
+        Client client = new Client();
+        client.setPort(getPort());
+
+        client.setRequest(new String[] {
+                method + " / HTTP/1.1" + SimpleHttpClient.CRLF +
+                    "Host: localhost:" + getPort() + SimpleHttpClient.CRLF +
+                    "Content-Length: " + requestBody.length() + SimpleHttpClient.CRLF +
+                    "Connection: Close" + SimpleHttpClient.CRLF +
+                    SimpleHttpClient.CRLF +
+                    requestBody
+                });
+        client.connect();
+        client.processRequest(true);
+        Assert.assertEquals(WebdavStatus.SC_REQUEST_TOO_LONG, client.getStatusCode());
+
+        // Without content length
+        client.reset();
+
+        client.setRequest(new String[] {
+                method + " / HTTP/1.1" + SimpleHttpClient.CRLF +
+                    "Host: localhost:" + getPort() + SimpleHttpClient.CRLF +
+                    "Transfer-Encoding: chunked" + SimpleHttpClient.CRLF +
+                    "Connection: Close" + SimpleHttpClient.CRLF +
+                    SimpleHttpClient.CRLF +
+                    Integer.toHexString(requestBody.length()) + SimpleHttpClient.CRLF +
+                    requestBody + SimpleHttpClient.CRLF +
+                    "0" + SimpleHttpClient.CRLF +
+                    SimpleHttpClient.CRLF
+                });
+        client.connect();
+        client.processRequest(true);
+        Assert.assertEquals(WebdavStatus.SC_REQUEST_TOO_LONG, client.getStatusCode());
+    }
+
 
     public static class CustomPropertyStore implements PropertyStore {
 
