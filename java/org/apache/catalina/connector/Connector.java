@@ -213,6 +213,20 @@ public class Connector extends LifecycleMBeanBase {
     protected int maxParameterCount = 10000;
 
     /**
+     * The maximum total number of parts permitted in a multipart/form-data
+     * request, in addition to maxParameterCount. 50 by default. A value of
+     * less than 0 means no limit.
+     */
+    protected int maxPartCount = 50;
+
+    /**
+     * The maximum number of header bytes permitted per part in a
+     * multipart/form-data request. 512 by default. A value of -1 means no
+     * limit.
+     */
+    protected int maxPartHeaderSize = 512;
+
+    /**
      * Maximum size of a POST which will be automatically parsed by the container. 2 MiB by default.
      */
     protected int maxPostSize = 2 * 1024 * 1024;
@@ -479,6 +493,48 @@ public class Connector extends LifecycleMBeanBase {
      */
     public void setMaxParameterCount(int maxParameterCount) {
         this.maxParameterCount = maxParameterCount;
+    }
+
+
+    /**
+     * @return the maximum total number of parts permitted in a
+     * multipart/form-data request. A value of less than 0 means no limit.
+     */
+    public int getMaxPartCount() {
+        return maxPartCount;
+    }
+
+
+    /**
+     * Set the maximum total number of parts permitted in a
+     * multipart/form-data request. A value of less than 0 means no limit.
+     *
+     * @param maxPartCount The new setting
+     */
+    public void setMaxPartCount(int maxPartCount) {
+        this.maxPartCount = maxPartCount;
+        setProperty("maxPartCount", String.valueOf(maxPartCount));
+    }
+
+
+    /**
+     * @return the maximum number of header bytes permitted per part in a
+     * multipart/form-data request. A value of -1 means no limit.
+     */
+    public int getMaxPartHeaderSize() {
+        return maxPartHeaderSize;
+    }
+
+
+    /**
+     * Set the maximum number of header bytes permitted per part in a
+     * multipart/form-data request. A value of -1 means no limit.
+     *
+     * @param maxPartHeaderSize The new setting
+     */
+    public void setMaxPartHeaderSize(int maxPartHeaderSize) {
+        this.maxPartHeaderSize = maxPartHeaderSize;
+        setProperty("maxPartHeaderSize", String.valueOf(maxPartHeaderSize));
     }
 
 
